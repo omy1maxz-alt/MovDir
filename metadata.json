@@ -1,0 +1,6 @@
+{
+  "name": "WebToApp",
+  "description": "Convert and package web applications into native Android APKs with WebView runtime and offline asset support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
