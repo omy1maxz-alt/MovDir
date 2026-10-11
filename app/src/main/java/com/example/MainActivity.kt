@@ -1,15 +1,21 @@
 package com.example
 
 import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
+import android.os.Message
+import android.util.Log
 import android.webkit.ConsoleMessage
+import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -20,6 +26,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -43,7 +53,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.webkit.WebViewAssetLoader
 import com.example.ui.theme.MyApplicationTheme
+import java.io.ByteArrayInputStream
+import java.io.InputStream
+import java.net.URLConnection
 
 class MainActivity : ComponentActivity() {
 
@@ -52,8 +66,76 @@ class MainActivity : ComponentActivity() {
     enableEdgeToEdge()
     setContent {
       MyApplicationTheme {
-        WebToAppScreen()
+        MVDirectorAppScreen()
       }
+    }
+  }
+}
+
+class LocalPublicAssetPathHandler(
+  private val context: Context,
+  private val subfolder: String = "public"
+) : WebViewAssetLoader.PathHandler {
+
+  override fun handle(path: String): WebResourceResponse? {
+    try {
+      var cleanPath = path.trimStart('/')
+      if (cleanPath.isEmpty() || cleanPath == "/") {
+        cleanPath = "index.html"
+      }
+      val assetPath = if (subfolder.isEmpty()) cleanPath else "$subfolder/$cleanPath"
+
+      var inputStream: InputStream? = null
+      var resolvedPath = assetPath
+
+      try {
+        inputStream = context.assets.open(resolvedPath)
+      } catch (e: Exception) {
+        // Fallback for root files or html routing
+        if (cleanPath.endsWith(".html") || !cleanPath.contains(".")) {
+          try {
+            resolvedPath = "$subfolder/index.html"
+            inputStream = context.assets.open(resolvedPath)
+          } catch (e2: Exception) {
+            // ignore
+          }
+        }
+      }
+
+      if (inputStream == null) {
+        return null
+      }
+
+      val mimeType = when {
+        resolvedPath.endsWith(".html") -> "text/html"
+        resolvedPath.endsWith(".js") || resolvedPath.endsWith(".mjs") -> "application/javascript"
+        resolvedPath.endsWith(".css") -> "text/css"
+        resolvedPath.endsWith(".json") || resolvedPath.endsWith(".webmanifest") -> "application/json"
+        resolvedPath.endsWith(".png") -> "image/png"
+        resolvedPath.endsWith(".jpg") || resolvedPath.endsWith(".jpeg") -> "image/jpeg"
+        resolvedPath.endsWith(".svg") -> "image/svg+xml"
+        resolvedPath.endsWith(".ico") -> "image/x-icon"
+        resolvedPath.endsWith(".webp") -> "image/webp"
+        resolvedPath.endsWith(".mp4") -> "video/mp4"
+        resolvedPath.endsWith(".mp3") -> "audio/mpeg"
+        resolvedPath.endsWith(".wav") -> "audio/wav"
+        resolvedPath.endsWith(".woff2") -> "font/woff2"
+        resolvedPath.endsWith(".woff") -> "font/woff"
+        resolvedPath.endsWith(".ttf") -> "font/ttf"
+        else -> URLConnection.guessContentTypeFromName(resolvedPath) ?: "application/octet-stream"
+      }
+
+      val headers = mapOf(
+        "Access-Control-Allow-Origin" to "*",
+        "Access-Control-Allow-Methods" to "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers" to "*",
+        "Cache-Control" to "no-cache"
+      )
+
+      return WebResourceResponse(mimeType, "UTF-8", 200, "OK", headers, inputStream)
+    } catch (e: Exception) {
+      Log.e("MVDirector", "Asset loading error: ${e.message}")
+      return null
     }
   }
 }
@@ -61,103 +143,44 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun WebToAppScreen() {
+fun MVDirectorAppScreen() {
   var webViewRef by remember { mutableStateOf<WebView?>(null) }
-  var currentUrl by remember { mutableStateOf("about:blank") }
-  var inputUrl by remember { mutableStateOf("https://example.com") }
-  var isLoading by remember { mutableStateOf(false) }
-  var pageTitle by remember { mutableStateOf("Web App Container") }
+  var currentUrl by remember { mutableStateOf("https://localhost/index.html") }
+  var isLoading by remember { mutableStateOf(true) }
+  var loadProgress by remember { mutableIntStateOf(0) }
+  var pageTitle by remember { mutableStateOf("MV Director AI") }
   var canGoBack by remember { mutableStateOf(false) }
   var canGoForward by remember { mutableStateOf(false) }
-  var showConfigSheet by remember { mutableStateOf(false) }
+  var showControlBar by remember { mutableStateOf(false) }
   var showConsoleDialog by remember { mutableStateOf(false) }
+  var showInfoDialog by remember { mutableStateOf(false) }
   val consoleLogs = remember { mutableStateListOf<String>() }
-  var customHtmlContent by remember {
-    mutableStateOf(
-      """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Mobile Web App</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
-      color: #f8fafc;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
-      text-align: center;
+
+  var fileChooserCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+
+  val filePickerLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.StartActivityForResult()
+  ) { result ->
+    val callback = fileChooserCallback
+    if (callback != null) {
+      if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+        val data = result.data
+        val uris = when {
+          data?.clipData != null -> {
+            val clipData = data.clipData!!
+            Array(clipData.itemCount) { i -> clipData.getItemAt(i).uri }
+          }
+          data?.data != null -> {
+            arrayOf(data.data!!)
+          }
+          else -> null
+        }
+        callback.onReceiveValue(uris)
+      } else {
+        callback.onReceiveValue(null)
+      }
+      fileChooserCallback = null
     }
-    .card {
-      background: rgba(255, 255, 255, 0.08);
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      border-radius: 20px;
-      padding: 28px 20px;
-      backdrop-filter: blur(12px);
-      max-width: 360px;
-      width: 100%;
-      box-shadow: 0 20px 40px rgba(0,0,0,0.4);
-    }
-    .badge {
-      display: inline-block;
-      background: #3b82f6;
-      color: white;
-      font-size: 12px;
-      font-weight: 700;
-      padding: 6px 14px;
-      border-radius: 999px;
-      margin-bottom: 16px;
-      letter-spacing: 0.5px;
-    }
-    h1 { font-size: 24px; margin-bottom: 8px; font-weight: 800; }
-    p { font-size: 14px; color: #94a3b8; line-height: 1.5; margin-bottom: 20px; }
-    .btn-action {
-      display: block;
-      width: 100%;
-      background: #6366f1;
-      color: white;
-      border: none;
-      border-radius: 12px;
-      padding: 14px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-    .btn-action:active { transform: scale(0.98); background: #4f46e5; }
-    .counter {
-      margin-top: 16px;
-      font-size: 18px;
-      font-weight: 700;
-      color: #38bdf8;
-    }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="badge">NATIVE APK READY</div>
-    <h1>Web App Runtime</h1>
-    <p>Upload your web app ZIP or paste code to test instant mobile functionality with full touch ergonomics.</p>
-    <button class="btn-action" onclick="increment()">Tap Interactive Button</button>
-    <div class="counter" id="counter">Taps: 0</div>
-  </div>
-  <script>
-    let count = 0;
-    function increment() {
-      count++;
-      document.getElementById('counter').innerText = 'Taps: ' + count;
-      console.log('User tapped button in web app. Count = ' + count);
-    }
-  </script>
-</body>
-</html>"""
-    )
   }
 
   // Handle hardware back press
@@ -167,125 +190,65 @@ fun WebToAppScreen() {
 
   Scaffold(
     modifier = Modifier.fillMaxSize(),
-    topBar = {
-      TopAppBar(
-        title = {
-          Column {
-            Text(
-              text = pageTitle.ifEmpty { "Web App Container" },
-              maxLines = 1,
-              style = MaterialTheme.typography.titleMedium,
-              fontWeight = FontWeight.Bold
-            )
-            Text(
-              text = if (currentUrl.startsWith("data:")) "Custom HTML Source" else currentUrl,
-              maxLines = 1,
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-          }
-        },
-        actions = {
-          IconButton(
-            onClick = { showConsoleDialog = true },
-            modifier = Modifier.testTag("console_button")
-          ) {
-            Badge(
-              containerColor = if (consoleLogs.isNotEmpty()) MaterialTheme.colorScheme.primary else Color.Transparent
-            ) {
-              Icon(Icons.Default.Terminal, contentDescription = "Console Logs")
-            }
-          }
-          IconButton(
-            onClick = { showConfigSheet = true },
-            modifier = Modifier.testTag("settings_button")
-          ) {
-            Icon(Icons.Default.Tune, contentDescription = "App Settings & Source")
-          }
-        },
-        colors = TopAppBarDefaults.topAppBarColors(
-          containerColor = MaterialTheme.colorScheme.surfaceContainer
-        )
-      )
-    },
-    bottomBar = {
-      Surface(
-        tonalElevation = 3.dp,
-        color = MaterialTheme.colorScheme.surfaceContainer
-      ) {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-          horizontalArrangement = Arrangement.SpaceAround,
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          IconButton(
-            onClick = { webViewRef?.goBack() },
-            enabled = canGoBack,
-            modifier = Modifier.testTag("nav_back_button")
-          ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Go Back")
-          }
-          IconButton(
-            onClick = { webViewRef?.goForward() },
-            enabled = canGoForward,
-            modifier = Modifier.testTag("nav_forward_button")
-          ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Go Forward")
-          }
-          IconButton(
-            onClick = {
-              if (currentUrl.startsWith("data:")) {
-                webViewRef?.loadDataWithBaseURL(null, customHtmlContent, "text/html", "UTF-8", null)
-              } else {
-                webViewRef?.reload()
-              }
-            },
-            modifier = Modifier.testTag("nav_reload_button")
-          ) {
-            Icon(Icons.Default.Refresh, contentDescription = "Reload Page")
-          }
-          FilledTonalButton(
-            onClick = { showConfigSheet = true },
-            shape = RoundedCornerShape(12.dp),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-            modifier = Modifier.testTag("source_button")
-          ) {
-            Icon(Icons.Default.Code, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Edit Source / URL", fontSize = 13.sp)
-          }
-        }
-      }
-    }
+    containerColor = Color.Black
   ) { innerPadding ->
     Box(
       modifier = Modifier
         .fillMaxSize()
         .padding(innerPadding)
+        .background(Color.Black)
     ) {
       AndroidView(
         modifier = Modifier
           .fillMaxSize()
-          .testTag("web_view_container"),
+          .testTag("mv_director_webview"),
         factory = { context ->
+          val assetLoader = WebViewAssetLoader.Builder()
+            .setDomain("localhost")
+            .addPathHandler("/", LocalPublicAssetPathHandler(context, "public"))
+            .build()
+
+          val appAssetsLoader = WebViewAssetLoader.Builder()
+            .setDomain("appassets.androidplatform.net")
+            .addPathHandler("/assets/", LocalPublicAssetPathHandler(context, "public/assets"))
+            .addPathHandler("/", LocalPublicAssetPathHandler(context, "public"))
+            .build()
+
           WebView(context).apply {
             settings.apply {
               javaScriptEnabled = true
               domStorageEnabled = true
-              databaseEnabled = true
-              loadWithOverviewMode = true
-              useWideViewPort = true
+              mediaPlaybackRequiresUserGesture = false
               allowFileAccess = true
               allowContentAccess = true
+              loadWithOverviewMode = true
+              useWideViewPort = true
               mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
               cacheMode = WebSettings.LOAD_DEFAULT
-              userAgentString = "${settings.userAgentString} MobileApp/1.0"
+              displayZoomControls = false
+              builtInZoomControls = false
+              setSupportMultipleWindows(false)
+              userAgentString = "${settings.userAgentString} MVDirector/1.0 MobileTouch"
             }
 
+            setBackgroundColor(android.graphics.Color.BLACK)
+
             webViewClient = object : WebViewClient() {
+              override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest
+              ): WebResourceResponse? {
+                val host = request.url.host
+                if (host == "localhost") {
+                  val res = assetLoader.shouldInterceptRequest(request.url)
+                  if (res != null) return res
+                } else if (host == "appassets.androidplatform.net") {
+                  val res = appAssetsLoader.shouldInterceptRequest(request.url)
+                  if (res != null) return res
+                }
+                return super.shouldInterceptRequest(view, request)
+              }
+
               override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 isLoading = true
                 currentUrl = url ?: ""
@@ -294,7 +257,7 @@ fun WebToAppScreen() {
               override fun onPageFinished(view: WebView?, url: String?) {
                 isLoading = false
                 currentUrl = url ?: ""
-                pageTitle = view?.title ?: "Web App"
+                pageTitle = view?.title ?: "MV Director AI"
                 canGoBack = view?.canGoBack() ?: false
                 canGoForward = view?.canGoForward() ?: false
               }
@@ -304,11 +267,19 @@ fun WebToAppScreen() {
                 request: WebResourceRequest?,
                 error: WebResourceError?
               ) {
-                consoleLogs.add("⚠️ Error [${error?.errorCode}]: ${error?.description}")
+                val desc = error?.description ?: "Unknown error"
+                consoleLogs.add("⚠️ [Error ${error?.errorCode}] $desc on ${request?.url}")
               }
             }
 
             webChromeClient = object : WebChromeClient() {
+              override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                loadProgress = newProgress
+                if (newProgress >= 100) {
+                  isLoading = false
+                }
+              }
+
               override fun onReceivedTitle(view: WebView?, title: String?) {
                 if (!title.isNullOrEmpty()) {
                   pageTitle = title
@@ -317,14 +288,42 @@ fun WebToAppScreen() {
 
               override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
                 if (consoleMessage != null) {
-                  val logEntry = "[${consoleMessage.messageLevel()}] ${consoleMessage.message()} (line ${consoleMessage.lineNumber()})"
+                  val level = consoleMessage.messageLevel()
+                  val logEntry = "[$level] ${consoleMessage.message()} (${consoleMessage.sourceId()}:${consoleMessage.lineNumber()})"
                   consoleLogs.add(logEntry)
+                }
+                return true
+              }
+
+              override fun onPermissionRequest(request: PermissionRequest?) {
+                request?.grant(request.resources)
+              }
+
+              override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+              ): Boolean {
+                fileChooserCallback?.onReceiveValue(null)
+                fileChooserCallback = filePathCallback
+
+                val intent = fileChooserParams?.createIntent() ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                  type = "*/*"
+                  addCategory(Intent.CATEGORY_OPENABLE)
+                }
+
+                try {
+                  filePickerLauncher.launch(intent)
+                } catch (e: Exception) {
+                  fileChooserCallback?.onReceiveValue(null)
+                  fileChooserCallback = null
+                  return false
                 }
                 return true
               }
             }
 
-            loadDataWithBaseURL(null, customHtmlContent, "text/html", "UTF-8", null)
+            loadUrl("https://localhost/index.html")
             webViewRef = this
           }
         },
@@ -333,127 +332,176 @@ fun WebToAppScreen() {
         }
       )
 
-      if (isLoading) {
+      // Top Loading Bar
+      if (isLoading && loadProgress < 100) {
         LinearProgressIndicator(
+          progress = { loadProgress / 100f },
           modifier = Modifier
             .fillMaxWidth()
-            .align(Alignment.TopCenter)
+            .align(Alignment.TopCenter),
+          color = MaterialTheme.colorScheme.primary,
+          trackColor = Color.Transparent
         )
       }
-    }
-  }
 
-  // Config & Source Modal Sheet
-  if (showConfigSheet) {
-    ModalBottomSheet(
-      onDismissRequest = { showConfigSheet = false },
-      containerColor = MaterialTheme.colorScheme.surface,
-      shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
-    ) {
-      Column(
+      // Compact floating quick-action pill at top right
+      Box(
         modifier = Modifier
-          .fillMaxWidth()
-          .padding(horizontal = 20.dp, vertical = 8.dp)
-          .navigationBarsPadding()
-          .imePadding()
+          .align(Alignment.TopEnd)
+          .statusBarsPadding()
+          .padding(end = 12.dp, top = 8.dp)
       ) {
-        Text(
-          text = "Web App Source & URL",
-          style = MaterialTheme.typography.headlineSmall,
-          fontWeight = FontWeight.Bold
-        )
-        Text(
-          text = "Load an external web application URL, test your custom bundle, or convert your code into an APK.",
-          style = MaterialTheme.typography.bodyMedium,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-          modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
-        )
+        Surface(
+          shape = CircleShape,
+          color = Color(0xCC18181B),
+          tonalElevation = 6.dp,
+          shadowElevation = 8.dp,
+          modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .clickable { showControlBar = !showControlBar }
+            .testTag("toggle_controls_button")
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = if (showControlBar) Icons.Default.Close else Icons.Default.Tune,
+              contentDescription = "Studio Controls",
+              tint = Color.White,
+              modifier = Modifier.size(20.dp)
+            )
+          }
+        }
+      }
 
-        OutlinedTextField(
-          value = inputUrl,
-          onValueChange = { inputUrl = it },
-          label = { Text("Web App URL (HTTPS/HTTP)") },
-          placeholder = { Text("https://my-app.example.com") },
-          singleLine = true,
+      // Bottom / Overlay Studio Controls Sheet
+      AnimatedVisibility(
+        visible = showControlBar,
+        enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+        exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+        modifier = Modifier.align(Alignment.BottomCenter)
+      ) {
+        Surface(
           modifier = Modifier
             .fillMaxWidth()
-            .testTag("url_input_field"),
-          shape = RoundedCornerShape(12.dp),
-          leadingIcon = { Icon(Icons.Default.Language, contentDescription = null) }
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(10.dp)
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+          shape = RoundedCornerShape(20.dp),
+          color = Color(0xF018181B),
+          tonalElevation = 12.dp,
+          shadowElevation = 16.dp
         ) {
-          Button(
-            onClick = {
-              if (inputUrl.isNotBlank()) {
-                val formatted = if (!inputUrl.startsWith("http://") && !inputUrl.startsWith("https://")) {
-                  "https://$inputUrl"
-                } else inputUrl
-                webViewRef?.loadUrl(formatted)
-                showConfigSheet = false
+          Column(
+            modifier = Modifier.padding(16.dp)
+          ) {
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.SpaceBetween,
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                  text = "🎬",
+                  fontSize = 20.sp,
+                  modifier = Modifier.padding(end = 8.dp)
+                )
+                Column {
+                  Text(
+                    text = "MV Director AI Studio",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                  )
+                  Text(
+                    text = "Mobile Touch Engine Running",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFA1A1AA)
+                  )
+                }
               }
-            },
-            modifier = Modifier
-              .weight(1f)
-              .testTag("load_url_button"),
-            shape = RoundedCornerShape(12.dp)
-          ) {
-            Icon(Icons.Default.PlayArrow, contentDescription = null)
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Load Live URL")
-          }
+              IconButton(
+                onClick = { showControlBar = false }
+              ) {
+                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Minimize", tint = Color.White)
+              }
+            }
 
-          OutlinedButton(
-            onClick = {
-              webViewRef?.loadDataWithBaseURL(null, customHtmlContent, "text/html", "UTF-8", null)
-              showConfigSheet = false
-            },
-            modifier = Modifier
-              .weight(1f)
-              .testTag("load_html_button"),
-            shape = RoundedCornerShape(12.dp)
-          ) {
-            Icon(Icons.Default.Html, contentDescription = null)
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Load HTML")
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(
+              modifier = Modifier.fillMaxWidth(),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              IconButton(
+                onClick = { webViewRef?.goBack() },
+                enabled = canGoBack,
+                modifier = Modifier
+                  .background(Color(0x33FFFFFF), RoundedCornerShape(12.dp))
+                  .testTag("studio_back_button")
+              ) {
+                Icon(
+                  Icons.AutoMirrored.Filled.ArrowBack,
+                  contentDescription = "Back",
+                  tint = if (canGoBack) Color.White else Color.Gray
+                )
+              }
+
+              IconButton(
+                onClick = { webViewRef?.goForward() },
+                enabled = canGoForward,
+                modifier = Modifier
+                  .background(Color(0x33FFFFFF), RoundedCornerShape(12.dp))
+                  .testTag("studio_forward_button")
+              ) {
+                Icon(
+                  Icons.AutoMirrored.Filled.ArrowForward,
+                  contentDescription = "Forward",
+                  tint = if (canGoForward) Color.White else Color.Gray
+                )
+              }
+
+              IconButton(
+                onClick = { webViewRef?.reload() },
+                modifier = Modifier
+                  .background(Color(0x33FFFFFF), RoundedCornerShape(12.dp))
+                  .testTag("studio_reload_button")
+              ) {
+                Icon(Icons.Default.Refresh, contentDescription = "Reload Studio", tint = Color.White)
+              }
+
+              Button(
+                onClick = { showConsoleDialog = true },
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                  containerColor = Color(0xFF4F46E5)
+                ),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier
+                  .weight(1f)
+                  .testTag("studio_logs_button")
+              ) {
+                Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Logs (${consoleLogs.size})", fontSize = 13.sp)
+              }
+
+              OutlinedButton(
+                onClick = { showInfoDialog = true },
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                modifier = Modifier.testTag("studio_info_button")
+              ) {
+                Icon(Icons.Default.Info, contentDescription = "Info", modifier = Modifier.size(16.dp))
+              }
+            }
           }
         }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Card(
-          shape = RoundedCornerShape(12.dp),
-          colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-          modifier = Modifier.fillMaxWidth()
-        ) {
-          Column(modifier = Modifier.padding(14.dp)) {
-            Text(
-              text = "📱 How to test & export APK:",
-              fontWeight = FontWeight.Bold,
-              style = MaterialTheme.typography.titleSmall
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-              text = "1. You can upload or paste your web app files (HTML, CSS, JS, React/Vite build).\n" +
-                  "2. Test features live directly on this emulator view.\n" +
-                  "3. To download the standalone APK file for your Android phone, click the Settings / Export icon in AI Studio and select 'Download APK'.",
-              style = MaterialTheme.typography.bodySmall,
-              lineHeight = 18.sp
-            )
-          }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
       }
     }
   }
 
-  // Console Logs Dialog
+  // Console Logs Modal Dialog
   if (showConsoleDialog) {
     AlertDialog(
       onDismissRequest = { showConsoleDialog = false },
@@ -463,7 +511,7 @@ fun WebToAppScreen() {
           horizontalArrangement = Arrangement.SpaceBetween,
           verticalAlignment = Alignment.CenterVertically
         ) {
-          Text("Web Console Logs", fontWeight = FontWeight.Bold)
+          Text("Studio Console Logs", fontWeight = FontWeight.Bold)
           if (consoleLogs.isNotEmpty()) {
             TextButton(onClick = { consoleLogs.clear() }) {
               Text("Clear")
@@ -496,6 +544,37 @@ fun WebToAppScreen() {
       confirmButton = {
         TextButton(onClick = { showConsoleDialog = false }) {
           Text("Close")
+        }
+      }
+    )
+  }
+
+  // App Info & Export Dialog
+  if (showInfoDialog) {
+    AlertDialog(
+      onDismissRequest = { showInfoDialog = false },
+      title = {
+        Text("MV Director AI - Installed", fontWeight = FontWeight.Bold)
+      },
+      text = {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Text(
+            text = "🎬 MV Director AI Mobile Cinematic Studio is fully packaged and running natively.",
+            style = MaterialTheme.typography.bodyMedium
+          )
+          Text(
+            text = "• Offline-first asset runtime via secure Localhost bridge\n" +
+                "• Touch & gesture support for storyboarding, timeline & shot planning\n" +
+                "• Full audio/video media decoding & hardware acceleration\n" +
+                "• Native file chooser for importing audio tracks and assets",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+        }
+      },
+      confirmButton = {
+        Button(onClick = { showInfoDialog = false }) {
+          Text("OK")
         }
       }
     )

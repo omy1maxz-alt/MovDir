@@ -1,6 +1,6 @@
 {
-  "name": "WebToApp",
-  "description": "Convert and package web applications into native Android APKs with WebView runtime and offline asset support.",
+  "name": "MV Director AI",
+  "description": "Professional cinematic music video storyboarding and AI visual director engineered exclusively for mobile touch workflows.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "WebToApp"
+rootProject.name = "MV Director AI"
 
 include(":app")
